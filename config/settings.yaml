@@ -1,0 +1,59 @@
+# ============================================
+# Dog Deterrent System — Configuración
+# ============================================
+
+# --- Cámara ---
+# Mac: 0 (webcam interna) o 1 (externa)
+# RPi: "picamera2"
+camera_source: 0
+frame_width: 640
+frame_height: 480
+
+# --- Modelo YOLO ---
+model:
+  path: "yolov8n.pt"          # nano = más rápido
+  confidence: 0.5              # 0.0-1.0, subir si hay falsos positivos
+  input_size: 640              # 320 para más velocidad, 640 para más precisión
+
+# --- Zona de exclusión (tacho de basura) ---
+# Coordenadas normalizadas (0.0 a 1.0)
+# Ejecuta 02_calibrate_zone.py para calibrar
+zone:
+  x_min: 0.60
+  y_min: 0.30
+  x_max: 0.95
+  y_max: 0.95
+
+# --- Detección ---
+detection:
+  # Clases COCO a detectar
+  dog_class_id: 16             # "dog" en COCO
+  person_class_id: 0           # "person" para safety check
+  # Cuántos frames consecutivos antes de disparar
+  consecutive_frames_required: 3
+  # No disparar si hay una persona en la zona
+  safety_check_person: true
+
+# --- Disparo ---
+fire:
+  cooldown_seconds: 10         # Mínimo entre disparos
+  burst_duration: 0.5          # Duración del chorro (segundos)
+  # En Mac se simula, en RPi usa GPIO
+  valve_gpio_pin: 17
+  pump_gpio_pin: 27
+
+# --- Alertas ---
+alerts:
+  save_captures: true
+  captures_dir: "logs/captures"
+  # Sonido de alerta en Mac (simulación)
+  play_sound: true
+
+# --- Visualización ---
+display:
+  show_window: true            # Mostrar ventana con video
+  show_fps: true
+  show_zone: true              # Dibujar zona de exclusión
+  show_detections: true        # Dibujar bounding boxes
+  zone_color_safe: [0, 255, 0]     # Verde cuando no hay perro
+  zone_color_danger: [0, 0, 255]   # Rojo cuando perro en zona

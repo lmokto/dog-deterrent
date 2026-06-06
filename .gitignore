@@ -1,0 +1,26 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# YOLO modelo descargado
+*.pt
+*.onnx
+*.ncnn
+runs/
+
+# Logs y capturas (no subir fotos de tu perro al repo)
+logs/
+*.log
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Datos sensibles
+*.env
