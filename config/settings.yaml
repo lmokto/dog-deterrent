@@ -4,8 +4,8 @@
 
 # --- Cámara ---
 # Mac: 0 (webcam interna) o 1 (externa)
-# RPi: "picamera2"
-camera_source: 0
+# RPi con Camera Module 3: "picamera2"
+camera_source: 0          # cambiar a "picamera2" en Raspberry Pi
 frame_width: 640
 frame_height: 480
 
