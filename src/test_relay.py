@@ -1,50 +1,47 @@
 #!/usr/bin/env python3
 """
-test_relay.py — Diagnóstico de conexión RPi 5 → Módulo relé SONGLE
+test_relay.py — Diagnóstico de conexión RPi 5 → Relé → Pistola de agua
 
-Verifica paso a paso que cada cable está bien conectado:
+Verifica paso a paso:
   1. DC+ y DC- (alimentación del relé)
-  2. IN1 (GPIO 17 → canal 1, válvula)
-  3. IN2 (GPIO 27 → canal 2, bomba)
+  2. IN1 (GPIO 17 → canal 1 → switch gatillo pistola)
+  3. Disparo real de la pistola
 
-Requisitos:
-  - Ejecutar en la Raspberry Pi 5
-  - Cables conectados: 5V→DC+, GND→DC-, GPIO17→IN1, GPIO27→IN2
-  - Jumpers del relé en posición LOW
+Cableado:
+  RPi pin 2  (5V)      →  DC+  (terminal tornillo relé)
+  RPi pin 6  (GND)     →  DC-  (terminal tornillo relé)
+  RPi pin 11 (GPIO 17) →  IN1  (terminal tornillo relé)
+  Relé NO1             →  patilla A del switch (pistola)
+  Relé COM1            →  patilla B del switch (pistola)
 
 Uso:
-  python3 test_relay.py
-
-Qué buscar:
-  - LED rojo en el relé = DC+ y DC- bien conectados
-  - Click audible = IN1 o IN2 funcionando
-  - LED del canal encendido = relé activado
+  python3 src/test_relay.py
 """
 import sys
 import time
 import platform
 
 # ============================================================
-# Detectar plataforma y librería GPIO disponible
+# Detectar plataforma
 # ============================================================
 IS_RPI = platform.machine().startswith("aarch64") or \
          platform.machine().startswith("arm")
 
 if not IS_RPI:
     print("=" * 50)
-    print("  ERROR: Este script debe ejecutarse en la Raspberry Pi")
-    print("  Estás en:", platform.machine(), platform.system())
+    print("  ERROR: Ejecuta este script en la Raspberry Pi")
+    print(f"  Plataforma detectada: {platform.machine()} {platform.system()}")
     print("=" * 50)
     sys.exit(1)
 
-# Intentar importar librería GPIO compatible con RPi 5
+# ============================================================
+# Importar librería GPIO compatible con RPi 5
+# ============================================================
 GPIO_LIB = None
-gpio = None
 
 try:
     from gpiozero import OutputDevice
     GPIO_LIB = "gpiozero"
-    print("  Librería: gpiozero (recomendada para RPi 5)")
 except ImportError:
     pass
 
@@ -52,92 +49,65 @@ if not GPIO_LIB:
     try:
         import RPi.GPIO as gpio_rpi
         GPIO_LIB = "RPi.GPIO"
-        gpio = gpio_rpi
-        print("  Librería: RPi.GPIO")
     except ImportError:
         pass
 
 if not GPIO_LIB:
     print("ERROR: No se encontró librería GPIO")
-    print("Instala una:")
-    print("  sudo apt install python3-gpiozero")
-    print("  pip install RPi.GPIO --break-system-packages")
+    print("Instala: sudo apt install python3-gpiozero")
     sys.exit(1)
 
 
 # ============================================================
-# Funciones de control según librería
+# Controlador del relé (solo canal 1)
 # ============================================================
+TRIGGER_PIN = 17  # GPIO 17 = pin físico 11
+
 class RelayTester:
-    """Controlador de relé compatible con gpiozero y RPi.GPIO."""
-
-    def __init__(self, pin_in1=17, pin_in2=27):
-        self.pin_in1 = pin_in1
-        self.pin_in2 = pin_in2
-
+    def __init__(self, pin=TRIGGER_PIN):
+        self.pin = pin
         if GPIO_LIB == "gpiozero":
-            # active_high=False porque el relé es active LOW
-            self.relay1 = OutputDevice(pin_in1, active_high=False,
-                                       initial_value=False)
-            self.relay2 = OutputDevice(pin_in2, active_high=False,
-                                       initial_value=False)
+            self.relay = OutputDevice(pin, active_high=False,
+                                      initial_value=False)
         else:
-            gpio.setmode(gpio.BCM)
-            gpio.setwarnings(False)
-            # HIGH = relé OFF (active LOW)
-            gpio.setup(pin_in1, gpio.OUT, initial=gpio.HIGH)
-            gpio.setup(pin_in2, gpio.OUT, initial=gpio.HIGH)
+            gpio_rpi.setmode(gpio_rpi.BCM)
+            gpio_rpi.setwarnings(False)
+            gpio_rpi.setup(pin, gpio_rpi.OUT, initial=gpio_rpi.HIGH)
 
-    def activate(self, channel):
-        """Activa un relé (channel 1 o 2)."""
+    def activate(self):
         if GPIO_LIB == "gpiozero":
-            if channel == 1:
-                self.relay1.on()
-            else:
-                self.relay2.on()
+            self.relay.on()
         else:
-            pin = self.pin_in1 if channel == 1 else self.pin_in2
-            gpio.output(pin, gpio.LOW)
+            gpio_rpi.output(self.pin, gpio_rpi.LOW)
 
-    def deactivate(self, channel):
-        """Desactiva un relé."""
+    def deactivate(self):
         if GPIO_LIB == "gpiozero":
-            if channel == 1:
-                self.relay1.off()
-            else:
-                self.relay2.off()
+            self.relay.off()
         else:
-            pin = self.pin_in1 if channel == 1 else self.pin_in2
-            gpio.output(pin, gpio.HIGH)
+            gpio_rpi.output(self.pin, gpio_rpi.HIGH)
 
-    def deactivate_all(self):
-        """Desactiva ambos relés."""
-        self.deactivate(1)
-        self.deactivate(2)
+    def fire(self, duration=0.3):
+        self.activate()
+        time.sleep(duration)
+        self.deactivate()
 
     def cleanup(self):
-        """Limpieza al salir."""
-        self.deactivate_all()
+        self.deactivate()
         if GPIO_LIB == "gpiozero":
-            self.relay1.close()
-            self.relay2.close()
+            self.relay.close()
         else:
-            gpio.cleanup([self.pin_in1, self.pin_in2])
+            gpio_rpi.cleanup([self.pin])
 
 
-def ask_yes_no(question):
-    """Pregunta sí/no al usuario."""
+def ask(question):
     while True:
         resp = input(f"  {question} (s/n): ").strip().lower()
         if resp in ("s", "si", "sí", "y", "yes"):
             return True
         if resp in ("n", "no"):
             return False
-        print("  Responde 's' o 'n'")
 
-
-def wait_enter(msg="Presiona Enter cuando estés listo..."):
-    """Espera a que el usuario presione Enter."""
+def wait(msg="Presiona Enter cuando estés listo..."):
     input(f"  {msg}")
 
 
@@ -147,208 +117,206 @@ def wait_enter(msg="Presiona Enter cuando estés listo..."):
 def main():
     print()
     print("=" * 55)
-    print("  DIAGNÓSTICO DE CONEXIÓN: RPi 5 → Relé SONGLE")
+    print("  DIAGNÓSTICO: RPi 5 → Relé → Pistola de agua")
     print("=" * 55)
+    print(f"  Librería GPIO: {GPIO_LIB}")
+    print(f"  Pin de disparo: GPIO {TRIGGER_PIN} (pin físico 11)")
     print()
-    print("  Pines configurados:")
-    print("    GPIO 17 (pin físico 11) → IN1 (canal 1, válvula)")
-    print("    GPIO 27 (pin físico 13) → IN2 (canal 2, bomba)")
-    print("    5V     (pin físico 2)  → DC+")
-    print("    GND    (pin físico 6)  → DC-")
+    print("  Cableado esperado:")
     print()
-    print("  Referencia de pines (mirando la RPi con USB abajo):")
+    print("  RPi              Relé           Pistola")
+    print("  ─────────────    ──────────     ──────────────")
+    print("  pin 2  (5V)  →   DC+")
+    print("  pin 6  (GND) →   DC-")
+    print("  pin 11 (GP17)→   IN1")
+    print("                    NO1       →   patilla A switch")
+    print("                    COM1      →   patilla B switch")
     print()
-    print("         columna izq    columna der")
-    print("       ┌─────────────┬─────────────┐")
-    print("       │ pin 1 (3.3V)│ pin 2 (5V)  │ ← DC+")
-    print("       │ pin 3 (SDA) │ pin 4 (5V)  │")
-    print("       │ pin 5 (SCL) │ pin 6 (GND) │ ← DC-")
-    print("       │ pin 7       │ pin 8       │")
-    print("       │ pin 9 (GND) │ pin 10      │")
-    print("       │ pin 11 GP17 │ pin 12      │ ← IN1")
-    print("       │ pin 13 GP27 │ pin 14 (GND)│ ← IN2")
-    print("       │  ...        │  ...        │")
-    print("       └─────────────┴─────────────┘")
-    print("                    ↓")
-    print("              puertos USB")
+    print("  Referencia GPIO (USB hacia abajo):")
+    print()
+    print("       ┌──────────────┬──────────────┐")
+    print("       │ pin 1  3.3V  │ pin 2  ★ 5V  │ → DC+")
+    print("       │ pin 3       │ pin 4        │")
+    print("       │ pin 5       │ pin 6  ★ GND │ → DC-")
+    print("       │ pin 7       │ pin 8        │")
+    print("       │ pin 9       │ pin 10       │")
+    print("       │ pin 11 ★GP17│ pin 12       │ → IN1")
+    print("       │  ...        │  ...         │")
+    print("       └──────────────┴──────────────┘")
+    print("                     ↓")
+    print("               puertos USB")
     print()
 
-    tester = RelayTester(pin_in1=17, pin_in2=27)
+    tester = RelayTester()
+    results = {}
 
     try:
         # ---- TEST 1: Alimentación ----
-        print("-" * 55)
-        print("  TEST 1: Alimentación (DC+ y DC-)")
-        print("-" * 55)
+        print("─" * 55)
+        print("  TEST 1: Alimentación del relé (DC+ y DC-)")
+        print("─" * 55)
         print()
-        print("  Mira el módulo relé ahora mismo.")
-        print("  ¿Ves algún LED encendido en la placa del relé?")
-        print("  (Suele ser un LED rojo pequeño de power)")
+        print("  Mira el módulo relé. ¿Ves un LED rojo encendido")
+        print("  en la placa? Eso indica que recibe alimentación.")
         print()
 
-        if ask_yes_no("¿Hay algún LED encendido en el relé?"):
-            print("  ✅ DC+ y DC- están bien conectados!")
+        if ask("¿Hay un LED encendido en el relé?"):
+            print("\n  ✅ Alimentación OK — DC+ y DC- bien conectados")
+            results["alimentación"] = "OK"
         else:
-            print("  ❌ No hay LED encendido. Posibles causas:")
-            print("     - Cable 5V (pin 2) no conectado a DC+")
-            print("     - Cable GND (pin 6) no conectado a DC-")
-            print("     - Cables al revés (5V en DC- y GND en DC+)")
-            print("     - Cable mal atornillado (afloja, reinserta, aprieta)")
-            print()
-            if not ask_yes_no("¿Quieres continuar con los otros tests?"):
+            print("\n  ❌ Sin alimentación. Revisa:")
+            print("     1. Cable pin 2 (5V) bien atornillado a DC+")
+            print("     2. Cable pin 6 (GND) bien atornillado a DC-")
+            print("     3. Que no estén invertidos")
+            results["alimentación"] = "FALLO"
+            if not ask("¿Continuar con los otros tests?"):
                 tester.cleanup()
                 return
         print()
 
-        # ---- TEST 2: IN1 (GPIO 17, canal 1) ----
-        print("-" * 55)
-        print("  TEST 2: Canal 1 — IN1 (GPIO 17 → válvula)")
-        print("-" * 55)
+        # ---- TEST 2: Click del relé ----
+        print("─" * 55)
+        print("  TEST 2: Señal IN1 (GPIO 17 → relé)")
+        print("─" * 55)
         print()
-        print("  Voy a activar el relé 1. Deberías escuchar un CLICK")
-        print("  y ver un LED encenderse en el relé.")
+        print("  Voy a activar el relé. Escucha si hace CLICK.")
         print()
-        wait_enter()
+        wait()
 
-        print("  Activando relé 1...", end=" ", flush=True)
-        tester.activate(1)
-        print("ACTIVADO")
-        time.sleep(0.5)
-
-        heard_click = ask_yes_no("¿Escuchaste un CLICK en el relé 1 (izquierdo)?")
-        saw_led = ask_yes_no("¿Se encendió un LED en el canal 1?")
-
-        print()
-        print("  Desactivando relé 1...", end=" ", flush=True)
-        tester.deactivate(1)
-        print("DESACTIVADO")
-        time.sleep(0.3)
-
-        if heard_click and saw_led:
-            print("  ✅ IN1 (GPIO 17) funciona perfectamente!")
-        elif heard_click and not saw_led:
-            print("  ⚠️  Click sí pero LED no. El relé funciona,")
-            print("     el LED podría estar fundido (no es problema).")
-        elif not heard_click and saw_led:
-            print("  ⚠️  LED sí pero click no. Raro. Verifica la conexión.")
-        else:
-            print("  ❌ IN1 no responde. Posibles causas:")
-            print("     - Cable GPIO 17 (pin 11) no conectado a IN1")
-            print("     - Jumpers en posición incorrecta (deben estar en LOW)")
-            print("     - Cable mal atornillado en el terminal IN1")
-        print()
-
-        # ---- TEST 3: IN2 (GPIO 27, canal 2) ----
-        print("-" * 55)
-        print("  TEST 3: Canal 2 — IN2 (GPIO 27 → bomba)")
-        print("-" * 55)
-        print()
-        print("  Voy a activar el relé 2.")
-        print()
-        wait_enter()
-
-        print("  Activando relé 2...", end=" ", flush=True)
-        tester.activate(2)
-        print("ACTIVADO")
-        time.sleep(0.5)
-
-        heard_click = ask_yes_no("¿Escuchaste un CLICK en el relé 2 (derecho)?")
-        saw_led = ask_yes_no("¿Se encendió un LED en el canal 2?")
-
-        print()
-        print("  Desactivando relé 2...", end=" ", flush=True)
-        tester.deactivate(2)
-        print("DESACTIVADO")
-        time.sleep(0.3)
-
-        if heard_click and saw_led:
-            print("  ✅ IN2 (GPIO 27) funciona perfectamente!")
-        elif heard_click and not saw_led:
-            print("  ⚠️  Click sí pero LED no. Relé funciona, LED puede estar fundido.")
-        elif not heard_click and saw_led:
-            print("  ⚠️  LED sí pero click no. Verifica la conexión.")
-        else:
-            print("  ❌ IN2 no responde. Posibles causas:")
-            print("     - Cable GPIO 27 (pin 13) no conectado a IN2")
-            print("     - Jumpers en posición incorrecta")
-            print("     - Cable mal atornillado en el terminal IN2")
-        print()
-
-        # ---- TEST 4: Ambos simultáneamente ----
-        print("-" * 55)
-        print("  TEST 4: Ambos relés simultáneamente")
-        print("-" * 55)
-        print()
-        print("  Voy a activar AMBOS relés a la vez.")
-        print()
-        wait_enter()
-
-        print("  Activando ambos...", end=" ", flush=True)
-        tester.activate(1)
-        tester.activate(2)
-        print("ACTIVADOS")
+        print("  Activando...", end=" ", flush=True)
+        tester.activate()
+        print("ON")
         time.sleep(1)
 
-        both_ok = ask_yes_no("¿Escuchaste DOS clicks (casi simultáneos)?")
+        click_ok = ask("¿Escuchaste un CLICK en el relé?")
+        led_ok = ask("¿Se encendió un LED en el canal 1 del relé?")
 
-        tester.deactivate_all()
-        print("  Desactivados.")
-        print()
+        print("\n  Desactivando...", end=" ", flush=True)
+        tester.deactivate()
+        print("OFF")
+        time.sleep(0.3)
 
-        if both_ok:
-            print("  ✅ Ambos canales funcionan simultáneamente!")
+        if click_ok:
+            print("\n  ✅ Relé responde — IN1 (GPIO 17) funciona")
+            results["señal IN1"] = "OK"
         else:
-            print("  ⚠️  Revisa que ambos canales estén conectados.")
+            print("\n  ❌ Sin click. Revisa:")
+            print("     1. Cable pin 11 (GPIO 17) atornillado a IN1")
+            print("     2. Jumpers amarillos en posición LOW")
+            results["señal IN1"] = "FALLO"
+            if not ask("¿Continuar?"):
+                tester.cleanup()
+                return
         print()
 
-        # ---- TEST 5: Ráfaga rápida (simula disparo) ----
-        print("-" * 55)
-        print("  TEST 5: Simulación de disparo (ráfaga rápida)")
-        print("-" * 55)
+        # ---- TEST 3: Pistola conectada ----
+        print("─" * 55)
+        print("  TEST 3: Conexión relé → pistola")
+        print("─" * 55)
         print()
-        print("  Voy a hacer 3 disparos rápidos en el relé 1")
-        print("  (como haría el sistema con la válvula de agua)")
+        print("  ⚠️  ASEGÚRATE de que:")
+        print("     - La pistola tiene batería cargada")
+        print("     - La pistola está encendida (switch ON)")
+        print("     - El depósito tiene agua (o está vacío para test)")
+        print("     - NO apuntas a nada que se pueda mojar")
         print()
-        wait_enter()
+        wait("Presiona Enter cuando la pistola esté lista...")
 
-        for i in range(3):
-            print(f"  Disparo {i+1}/3...", end=" ", flush=True)
-            tester.activate(1)
-            time.sleep(0.3)
-            tester.deactivate(1)
-            print("click!")
-            time.sleep(0.4)
-
+        print("\n  Activando relé por 0.5 segundos...")
+        print("  (Si la pistola está conectada, debería disparar)")
         print()
-        burst_ok = ask_yes_no("¿Escuchaste 3 clicks rápidos?")
+        tester.fire(duration=0.5)
 
-        if burst_ok:
-            print("  ✅ Ráfaga OK! El relé responde a disparos rápidos.")
+        if ask("¿La pistola disparó (escuchaste motor o salió agua)?"):
+            print("\n  ✅ ¡Pistola funciona! Conexión completa OK")
+            results["pistola"] = "OK"
         else:
-            print("  ⚠️  Los clicks no fueron claros. Puede ser normal")
-            print("     si los disparos son muy rápidos para tu oído.")
+            print("\n  ❌ La pistola no disparó. Revisa:")
+            print("     1. Cables NO1 y COM1 soldados/conectados al switch")
+            print("     2. Que la pistola esté encendida y con batería")
+            print("     3. Prueba apretar el gatillo manualmente")
+            print("        (si manual tampoco funciona, es la pistola)")
+            results["pistola"] = "FALLO"
         print()
+
+        # ---- TEST 4: Ráfaga ----
+        if results.get("pistola") == "OK":
+            print("─" * 55)
+            print("  TEST 4: Ráfaga de disparos (simula sistema real)")
+            print("─" * 55)
+            print()
+            print("  Voy a hacer 3 disparos cortos de 0.3 segundos")
+            print("  con 0.5 segundos de pausa entre cada uno.")
+            print()
+            wait("¿Listo? Enter para disparar ráfaga...")
+
+            for i in range(3):
+                print(f"  💦 Disparo {i+1}/3", flush=True)
+                tester.fire(duration=0.3)
+                time.sleep(0.5)
+
+            if ask("¿Se ejecutaron los 3 disparos correctamente?"):
+                print("\n  ✅ Ráfaga OK — sistema listo para producción")
+                results["ráfaga"] = "OK"
+            else:
+                print("\n  ⚠️  Ráfaga parcial. Puede ser normal si los")
+                print("     disparos son muy rápidos para la bomba.")
+                results["ráfaga"] = "PARCIAL"
+            print()
+
+        # ---- TEST 5: Duración configurable ----
+        if results.get("pistola") == "OK":
+            print("─" * 55)
+            print("  TEST 5: Ajuste de duración del chorro")
+            print("─" * 55)
+            print()
+            print("  Prueba diferentes duraciones para encontrar")
+            print("  la ideal para tu perro (0.2s corto → 1.0s largo)")
+            print()
+
+            while True:
+                try:
+                    dur = input("  Duración en segundos (0.2-2.0, q=salir): ")
+                    if dur.strip().lower() == "q":
+                        break
+                    dur = float(dur)
+                    if 0.1 <= dur <= 3.0:
+                        print(f"  💦 Disparando {dur}s...", flush=True)
+                        tester.fire(duration=dur)
+                        print("  Listo.")
+                    else:
+                        print("  Usa un valor entre 0.1 y 3.0")
+                except ValueError:
+                    print("  Escribe un número (ej: 0.5)")
+            print()
 
         # ---- RESUMEN ----
         print("=" * 55)
         print("  RESUMEN DEL DIAGNÓSTICO")
         print("=" * 55)
         print()
-        print("  Si todos los tests pasaron:")
-        print("  ✅ Tu cableado RPi → Relé está correcto")
-        print("  ✅ Siguiente paso: conectar la válvula/pistola")
-        print("     al lado de salida (NO y COM)")
+        all_ok = all(v == "OK" for v in results.values())
+
+        for test, result in results.items():
+            icon = "✅" if result == "OK" else "⚠️ " if result == "PARCIAL" else "❌"
+            print(f"  {icon} {test}: {result}")
+
         print()
-        print("  Si algún test falló:")
-        print("  1. Verifica que los jumpers estén en LOW")
-        print("  2. Afloja y reaprieta los tornillos del terminal")
-        print("  3. Confirma los pines con: pinout (en terminal RPi)")
-        print("  4. Prueba intercambiar IN1 ↔ IN2 para descartar")
-        print("     un canal dañado")
+        if all_ok:
+            print("  🎉 ¡Todo funciona! Tu sistema está listo.")
+            print()
+            print("  Siguiente paso:")
+            print("    1. Cierra la pistola con los cables saliendo")
+            print("    2. Ejecuta el sistema completo:")
+            print("       python3 src/03_full_system.py")
+            print("    3. Acerca tu perro al tacho y observa 💦")
+        else:
+            print("  Revisa las conexiones de los tests que fallaron")
+            print("  y vuelve a ejecutar: python3 src/test_relay.py")
         print()
 
     except KeyboardInterrupt:
-        print("\n\n  Interrumpido por usuario.")
+        print("\n\n  Interrumpido.")
     finally:
         tester.cleanup()
         print("  GPIO limpiado. Test terminado.")
