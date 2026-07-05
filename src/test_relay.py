@@ -37,13 +37,26 @@ if not IS_RPI:
 # ============================================================
 # Importar librería GPIO compatible con RPi 5
 # ============================================================
+# Orden de preferencia:
+#   1. lgpio  — librería nativa RPi5 (RP1 chip), inicializa pin en HIGH
+#               sin pulso LOW previo → no activa el relé al arrancar
+#   2. gpiozero — usa lgpio como backend pero añade una capa que puede
+#               generar un pulso LOW durante __init__
+#   3. RPi.GPIO — no soportado en RPi5 (necesita sudo y falla en RP1)
 GPIO_LIB = None
 
 try:
-    from gpiozero import OutputDevice
-    GPIO_LIB = "gpiozero"
+    import lgpio as _lgpio_mod
+    GPIO_LIB = "lgpio"
 except ImportError:
     pass
+
+if not GPIO_LIB:
+    try:
+        from gpiozero import OutputDevice as _gpiozero_OutputDevice
+        GPIO_LIB = "gpiozero"
+    except ImportError:
+        pass
 
 if not GPIO_LIB:
     try:
@@ -54,47 +67,88 @@ if not GPIO_LIB:
 
 if not GPIO_LIB:
     print("ERROR: No se encontró librería GPIO")
-    print("Instala: sudo apt install python3-gpiozero")
+    print("Instala: sudo apt install python3-lgpio  # RPi5")
+    print("         sudo apt install python3-gpiozero")
     sys.exit(1)
 
 
 # ============================================================
 # Controlador del relé (solo canal 1)
+# Relés típicos de 2 canales son active LOW: LOW=ON, HIGH=OFF
 # ============================================================
 TRIGGER_PIN = 17  # GPIO 17 = pin físico 11
 
 class RelayTester:
-    def __init__(self, pin=TRIGGER_PIN):
+    """
+    Controlador de relé active LOW.
+    Garantiza que el pin arranca en HIGH (relé OFF) sin importar
+    el estado previo o la librería GPIO usada.
+    """
+
+    def __init__(self, pin: int = TRIGGER_PIN):
         self.pin = pin
-        if GPIO_LIB == "gpiozero":
-            self.relay = OutputDevice(pin, active_high=False,
-                                      initial_value=False)
-        else:
+        self._mode = GPIO_LIB
+        self._lgpio_handle = None
+
+        if self._mode == "lgpio":
+            # lgpio: abre el chip y reclama el pin con level=1 (HIGH=OFF)
+            # directamente, sin ningún pulso LOW intermedio.
+            self._lgpio_handle = _lgpio_mod.gpiochip_open(0)
+            _lgpio_mod.gpio_claim_output(
+                self._lgpio_handle, pin,
+                lFlags=0,
+                level=1  # HIGH = relé OFF desde el primer nanosegundo
+            )
+
+        elif self._mode == "gpiozero":
+            # gpiozero sobre lgpio: forzamos initial_value=False (pin HIGH)
+            # y llamamos .off() explícito por si el backend pulsó LOW al init.
+            self._relay = _gpiozero_OutputDevice(
+                pin, active_high=False, initial_value=False
+            )
+            self._relay.off()  # asegurar estado seguro
+
+        else:  # RPi.GPIO
             gpio_rpi.setmode(gpio_rpi.BCM)
             gpio_rpi.setwarnings(False)
             gpio_rpi.setup(pin, gpio_rpi.OUT, initial=gpio_rpi.HIGH)
+            gpio_rpi.output(pin, gpio_rpi.HIGH)  # doble seguro
+
+    # ------------------------------------------------------------------
 
     def activate(self):
-        if GPIO_LIB == "gpiozero":
-            self.relay.on()
+        """Activa el relé (LOW para active-LOW)."""
+        if self._mode == "lgpio":
+            _lgpio_mod.gpio_write(self._lgpio_handle, self.pin, 0)  # LOW = ON
+        elif self._mode == "gpiozero":
+            self._relay.on()
         else:
             gpio_rpi.output(self.pin, gpio_rpi.LOW)
 
     def deactivate(self):
-        if GPIO_LIB == "gpiozero":
-            self.relay.off()
+        """Desactiva el relé (HIGH para active-LOW)."""
+        if self._mode == "lgpio":
+            _lgpio_mod.gpio_write(self._lgpio_handle, self.pin, 1)  # HIGH = OFF
+        elif self._mode == "gpiozero":
+            self._relay.off()
         else:
             gpio_rpi.output(self.pin, gpio_rpi.HIGH)
 
-    def fire(self, duration=0.3):
+    def fire(self, duration: float = 0.3):
+        """Disparo cronometrado: activa → espera → desactiva."""
         self.activate()
         time.sleep(duration)
         self.deactivate()
 
     def cleanup(self):
+        """Lleva el pin a estado seguro y libera recursos GPIO."""
         self.deactivate()
-        if GPIO_LIB == "gpiozero":
-            self.relay.close()
+        if self._mode == "lgpio" and self._lgpio_handle is not None:
+            _lgpio_mod.gpio_free(self._lgpio_handle, self.pin)
+            _lgpio_mod.gpiochip_close(self._lgpio_handle)
+            self._lgpio_handle = None
+        elif self._mode == "gpiozero":
+            self._relay.close()
         else:
             gpio_rpi.cleanup([self.pin])
 
